@@ -75,13 +75,15 @@ type serverOptions struct {
 	registers              func(gs *grpc.Server)
 	secureTLSConfig        *tls.Config
 	overrideTraceID        bool
+	grpcServerOptions      []grpc.ServerOption
 }
 
 func newServerOptions() *serverOptions {
 	return &serverOptions{
-		logger:          zlog,
-		isPlainText:     true,
-		overrideTraceID: false,
+		logger:            zlog,
+		isPlainText:       true,
+		overrideTraceID:   false,
+		grpcServerOptions: []grpc.ServerOption{},
 	}
 }
 
@@ -96,7 +98,6 @@ func newServerOptions() *serverOptions {
 // Here how various options affects the behavior of the `Launch` method.
 // - WithSecure(SecuredByX509KeyPair(..., ...)) => Starts a TLS HTTP2 endpoint to serve the gRPC over an encrypted connection
 // - WithHealthCheck(check, HealthCheckOverHTTP) => Offers an HTTP endpoint `/healthz` to query the health check over HTTP
-//
 type Server struct {
 	shutter    *shutter.Shutter
 	options    *serverOptions
@@ -119,8 +120,9 @@ type Server struct {
 // if requested by the community.
 //
 // **Important** We use `NewServer2` name temporarly while we test the concept, when
-//               we are statisfied with the interface and feature set, the actual
-//               `NewServer` will be replaced by this implementation.
+//
+//	we are statisfied with the interface and feature set, the actual
+//	`NewServer` will be replaced by this implementation.
 func NewServer2(opts ...ServerOption) *Server {
 	options := newServerOptions()
 	for _, opt := range opts {
@@ -290,10 +292,10 @@ func (s *Server) logger() *zap.Logger {
 
 // RegisterService can be used to register your own gRPC service handler.
 //
-//     server := dgrpc.NewServer2(...)
-//     server.RegisterService(func (gs *grpc.Server) {
-//       pbapi.RegisterStateService(gs, implementation)
-//     })
+//	server := dgrpc.NewServer2(...)
+//	server.RegisterService(func (gs *grpc.Server) {
+//	  pbapi.RegisterStateService(gs, implementation)
+//	})
 //
 // **Note**
 func (s *Server) RegisterService(f func(gs *grpc.Server)) {
@@ -547,11 +549,19 @@ func OverrideTraceID() ServerOption {
 	}
 }
 
+// WithGrpcServerOption can be used to add any arbitrary grpc server option
+func WithGrpcServerOption(serverOption grpc.ServerOption) ServerOption {
+	return func(options *serverOptions) {
+		options.grpcServerOptions = append(options.grpcServerOptions, serverOption)
+	}
+}
+
 // NewServer creates a new standard fully configured with tracing, logging and
 // more.
 //
 // Deprecated: Use NewGRPCServer version instead, the `NewServer` will return
-//             a `dgrpc.Server` instance in an upcoming version.
+//
+//	a `dgrpc.Server` instance in an upcoming version.
 func NewServer(opts ...ServerOption) *grpc.Server {
 	return NewGRPCServer(opts...)
 }
@@ -626,7 +636,7 @@ func newGRPCServer(options *serverOptions) *grpc.Server {
 		streamInterceptors = append(streamInterceptors, options.postStreamInterceptors...)
 	}
 
-	s := grpc.NewServer(
+	grpcServerOptions := []grpc.ServerOption{
 		grpc.KeepaliveEnforcementPolicy(
 			keepalive.EnforcementPolicy{
 				MinTime:             15 * time.Second,
@@ -642,8 +652,10 @@ func newGRPCServer(options *serverOptions) *grpc.Server {
 		grpc_middleware.WithStreamServerChain(streamInterceptors...),
 		grpc_middleware.WithUnaryServerChain(unaryInterceptors...),
 		grpc.StatsHandler(&ocgrpc.ServerHandler{}),
-	)
+	}
+	grpcServerOptions = append(grpcServerOptions, options.grpcServerOptions...)
 
+	s := grpc.NewServer(grpcServerOptions...)
 	grpc_prometheus.EnableHandlingTimeHistogram(grpc_prometheus.WithHistogramBuckets([]float64{0, .5, 1, 2, 3, 5, 8, 10, 20, 30}))
 	grpc_prometheus.Register(s)
 	reflection.Register(s)
@@ -683,7 +695,8 @@ func defaultServerCodeLevel(code codes.Code) zapcore.Level {
 // SimpleHealthCheck creates an HTTP handler that server health check response based on `isDown`.
 //
 // Deprecated: Uses `server := dgrpc.NewServer2(options...)` with the `dgrpc.WithHealthCheck(dgrpc.HealthCheckOverHTTP, ...)`
-//             then `go server.Launch()` instead.
+//
+//	then `go server.Launch()` instead.
 func SimpleHealthCheck(isDown func() bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		if isDown() {
@@ -698,8 +711,9 @@ func SimpleHealthCheck(isDown func() bool) http.HandlerFunc {
 // if `healthHandler` is specified.
 //
 // Deprecated: Uses `server := dgrpc.NewServer2(options...)` with the `dgrpc.WithHealthCheck(dgrpc.HealthCheckOverHTTP, ...)`
-//             then `go server.Launch()` instead. By default opens a plain-text server, if you require an insecure server
-//             like before, use `InsecureServer` option.
+//
+//	then `go server.Launch()` instead. By default opens a plain-text server, if you require an insecure server
+//	like before, use `InsecureServer` option.
 func SimpleHTTPServer(srv *grpc.Server, listenAddr string, healthHandler http.HandlerFunc) *http.Server {
 	router := mux.NewRouter()
 
@@ -734,8 +748,9 @@ func SimpleHTTPServer(srv *grpc.Server, listenAddr string, healthHandler http.Ha
 // ListenAndServe open a TCP listener and serve gRPC through it the received HTTP server.
 //
 // Deprecated: Uses `server := dgrpc.NewServer2(options...)` then `go server.Launch()` instead. If you
-//             require HTTP health handler, uses option `dgrpc.WithHealthCheck(dgrpc.HealthCheckOverHTTP, ...)`
-//             when configuring your server.
+//
+//	require HTTP health handler, uses option `dgrpc.WithHealthCheck(dgrpc.HealthCheckOverHTTP, ...)`
+//	when configuring your server.
 func ListenAndServe(srv *http.Server) error {
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
